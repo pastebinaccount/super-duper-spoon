@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Secure Luau Locker</title>
+<style>
+:root{--bg:#0b0b0f;--card:#0f1720;--muted:#9aa4b2;--accent:#7c5cff}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#05060a 0%,#0b0b0f 60%);height:100vh;display:grid;place-items:center;color:#e6eef8}
+.container{width:min(920px,96vw);display:grid;grid-template-columns:1fr 420px;gap:18px;padding:24px}
+.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border-radius:14px;padding:18px;box-shadow:0 6px 30px rgba(2,6,23,0.6);backdrop-filter:blur(4px);transition:transform .25s}
+.header{display:flex;align-items:center;gap:12px}
+.logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#23d5ab);display:grid;place-items:center;font-weight:700;color:#081025}
+.h1{font-size:18px;margin:0}
+.small{color:var(--muted);font-size:13px}
+.controls{display:flex;gap:8px;margin-top:12px;align-items:center}
+.input,textarea,button{outline:none;border:none}
+.input,textarea{background:#071223;color:#e6eef8;padding:10px;border-radius:8px;width:100%}
+textarea{min-height:240px;resize:vertical;font-family:ui-monospace,monospace}
+.btn{background:linear-gradient(90deg,var(--accent),#2dd4bf);padding:10px 14px;border-radius:10px;color:#021018;font-weight:700;cursor:pointer;box-shadow:0 6px 18px rgba(124,92,255,0.18);transition:transform .12s}
+.btn:active{transform:translateY(1px)}
+.row{display:flex;gap:8px;align-items:center}
+.drop{border:2px dashed rgba(255,255,255,0.04);padding:18px;border-radius:10px;min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);transition:background .18s,transform .12s}
+.drop.drag{background:rgba(255,255,255,0.02);transform:scale(1.01)}
+.meta{font-size:13px;color:var(--muted);margin-top:8px}
+.linkbox{word-break:break-all;background:#06111a;padding:10px;border-radius:8px;margin-top:10px;color:#9fdbe9;font-size:13px}
+.switch{display:flex;gap:8px;align-items:center}
+.checkbox{width:18px;height:18px;border-radius:6px;border:2px solid rgba(255,255,255,0.06);display:grid;place-items:center;cursor:pointer}
+.checkbox.on{background:linear-gradient(90deg,var(--accent),#2dd4bf);border:none}
+.footer{font-size:13px;color:var(--muted);margin-top:10px;text-align:center}
+.access{padding:18px;display:flex;flex-direction:column;gap:10px}
+.hidden{display:none}
+.bad{color:#ff8b8b}
+.good{color:#b5ffc7}
+@media (max-width:920px){.container{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <div class="header">
+      <div class="logo">SL</div>
+      <div>
+        <div class="h1">Secure Luau Locker</div>
+        <div class="small">Encrypt & share .luau/.txt — client-side AES-GCM, password required to open</div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <div class="drop" id="drop">Drop file here or click to paste / type code</div>
+      <textarea id="code" class="input" placeholder="Paste your Luau/TXT code here (or drop a file)"></textarea>
+
+      <div class="row" style="margin-top:10px">
+        <input id="password" class="input" style="width:260px" type="password" placeholder="Password to protect file"/>
+        <div class="switch" title="Roblox-only access">
+          <div id="rbxToggle" class="checkbox" role="button"></div>
+          <div class="small">Roblox browser only</div>
+        </div>
+        <button id="secureBtn" class="btn" style="margin-left:auto">Secure →</button>
+      </div>
+
+      <div class="meta">File: <span id="fname">none</span> • Size: <span id="fsize">0</span></div>
+      <div id="linkBox" class="linkbox hidden"></div>
+      <div class="footer">Share the link + password. The file is encrypted in the link (no server).</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:700">Open secured file</div>
+      <div class="small">Paste link or visit one</div>
+    </div>
+
+    <div class="access" id="accessArea">
+      <input id="linkInput" class="input" placeholder="Paste secure link or open one with fragment"/>
+      <input id="openPass" class="input" type="password" placeholder="Password to unlock"/>
+      <div style="display:flex;gap:8px">
+        <button id="openBtn" class="btn">Open</button>
+        <button id="downloadBtn" class="btn hidden">Download</button>
+        <button id="copyBtn" class="btn hidden">Copy Code</button>
+      </div>
+      <div id="status" class="meta"></div>
+      <pre id="preview" style="background:#06111a;padding:10px;border-radius:8px;overflow:auto;max-height:360px;font-family:ui-monospace,monospace;font-size:13px" class="hidden"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Minimal helpers */
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder()
+const rand = n => crypto.getRandomValues(new Uint8Array(n))
+const toB64 = buf => btoa(String.fromCharCode.apply(null, [...new Uint8Array(buf)]))
+const fromB64 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0))
+
+/* crypto: PBKDF2 -> AES-GCM */
+async function deriveKey(password, salt) {
+  const pw = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey'])
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:120000, hash:'SHA-256'},
+    pw, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt'])
+}
+async function encryptText(text, password, meta={}) {
+  const salt = rand(16), iv = rand(12)
+  const key = await deriveKey(password, salt)
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, enc.encode(text))
+  // payload: version|salt|iv|cipher|meta-json (all base64, meta base64 of JSON)
+  const payload = ['v1', toB64(salt), toB64(iv), toB64(ct), toB64(enc.encode(JSON.stringify(meta)))].join('|')
+  return payload
+}
+async function decryptPayload(payload, password) {
+  try{
+    const [v,saltB,ivB,ctB,metaB] = payload.split('|')
+    if(v!=='v1') throw 'bad version'
+    const salt = fromB64(saltB), iv = fromB64(ivB), ct = fromB64(ctB)
+    const key = await deriveKey(password, salt.buffer)
+    const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct.buffer)
+    const meta = JSON.parse(dec.decode(fromB64(metaB)))
+    return {text: dec.decode(plain), meta}
+  }catch(e){throw new Error('decryption failed')}
+}
+
+/* UI wiring */
+const drop = $('drop'), code = $('code'), fname = $('fname'), fsize = $('fsize'), password = $('password')
+const secureBtn = $('secureBtn'), linkBox = $('linkBox'), rbx = $('rbxToggle'), linkInput = $('linkInput')
+const openBtn = $('openBtn'), status = $('status'), preview = $('preview'), downloadBtn = $('downloadBtn'), copyBtn = $('copyBtn'), openPass = $('openPass')
+
+let fileName = 'paste.txt', fileBytes = null, rbxOnly = false
+
+rbx.addEventListener('click', ()=> rbx.classList.toggle('on') & (rbxOnly=!rbxOnly))
+
+drop.addEventListener('click', ()=> code.focus())
+;['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('drag')}))
+;['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('drag')}))
+drop.addEventListener('drop', async ev=>{
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0]
+  if(f){
+    fileName = f.name
+    const arr = new Uint8Array(await f.arrayBuffer())
+    fileBytes = arr
+    code.value = new TextDecoder().decode(arr)
+    fname.textContent = fileName
+    fsize.textContent = arr.length + ' bytes'
+  }
+})
+
+code.addEventListener('input', ()=> {
+  fileBytes = new TextEncoder().encode(code.value)
+  fileName = 'paste.txt'
+  fname.textContent = fileName
+  fsize.textContent = fileBytes.length + ' bytes'
+})
+
+secureBtn.addEventListener('click', async ()=>{
+  const pw = password.value.trim()
+  const txt = code.value
+  if(!pw || !txt){ linkBox.textContent = 'Password and code required'; linkBox.classList.remove('hidden'); return }
+  secureBtn.disabled = true
+  status.textContent = 'Encrypting...'
+  try{
+    const meta = {name:fileName, rbxOnly}
+    const payload = await encryptText(txt, pw, meta)
+    const link = location.origin + location.pathname + '#secure:' + payload
+    linkBox.innerHTML = '<strong>Shareable link (copy + give password):</strong><div style="margin-top:8px">'+link+'</div>'
+    linkBox.classList.remove('hidden')
+    // quick UX: set link input for easy copy
+    linkInput.value = link
+    status.textContent = 'Done ✔'
+    preview.classList.add('hidden')
+    downloadBtn.classList.add('hidden')
+    copyBtn.classList.remove('hidden')
+  }catch(e){
+    status.textContent = 'Error'
+  } finally{ secureBtn.disabled=false; password.value=''; code.value=''; fileBytes=null; fname.textContent='none'; fsize.textContent='0' }
+})
+
+/* Open / read */
+openBtn.addEventListener('click', ()=> openFrom(linkInput.value.trim(), openPass.value.trim()))
+copyBtn.addEventListener('click', ()=> navigator.clipboard.writeText(linkInput.value || linkBox.textContent.split('\n')[0] || '') )
+downloadBtn.addEventListener('click', ()=> {
+  const text = preview.textContent
+  const blob = new Blob([text], {type:'text/plain'})
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+  a.download = 'secured.txt'; document.body.appendChild(a); a.click(); a.remove()
+})
+
+async function openFrom(raw, pw){
+  status.textContent = ''; preview.classList.add('hidden'); downloadBtn.classList.add('hidden'); copyBtn.classList.add('hidden')
+  try{
+    if(!raw){ status.textContent='Paste the secure link or open one with the fragment.'; return }
+    const frag = raw.includes('#secure:') ? raw.split('#secure:')[1] : (raw.startsWith('secure:')?raw.split('secure:')[1]:null)
+    if(!frag) { status.textContent='No secure payload detected in link.'; return }
+    status.textContent = 'Decrypting...'
+    const obj = await decryptPayload(frag, pw)
+    // Roblox check if required
+    if(obj.meta && obj.meta.rbxOnly){
+      const ua = navigator.userAgent.toLowerCase()
+      if(!ua.includes('roblox')){ status.innerHTML = '<span class="bad">Blocked:</span> link is Roblox-only and your browser is not Roblox.'; return }
+    }
+    status.innerHTML = '<span class="good">Access granted</span> • ' + (obj.meta.name || 'file.txt')
+    preview.textContent = obj.text
+    preview.classList.remove('hidden')
+    downloadBtn.classList.remove('hidden')
+    copyBtn.classList.remove('hidden')
+  }catch(e){
+    status.innerHTML = '<span class="bad">Access denied — wrong password or corrupted link.</span>'
+  }
+}
+
+/* Auto-open when visiting link with fragment */
+(function autoOpen(){
+  const h = location.hash
+  if(h && h.startsWith('#secure:')){
+    const frag = h.slice(8)
+    linkInput.value = location.href
+    status.textContent = 'Secure link detected — enter password and press Open'
+  }
+})()
+</script>
+</body>
+</html>
